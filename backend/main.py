@@ -16,6 +16,8 @@ import base64
 import os
 import mimetypes
 import httpx
+import re
+import shutil
 
 app = FastAPI(title="Taggerr API")
 
@@ -31,6 +33,7 @@ ART_DIR        = Path(os.environ.get("ART_DIR", "/art"))
 ACOUSTID_KEY   = os.environ.get("ACOUSTID_API_KEY", "")
 DISCOGS_TOKEN  = os.environ.get("DISCOGS_TOKEN", "")
 BEETS_URL          = os.environ.get("BEETS_URL", "http://beets:8337")
+RENAME_TEMPLATE    = os.environ.get("RENAME_TEMPLATE", "{artist}/{album}/{track} - {title}")
 # Prefijo que beets usa internamente para los paths.
 # Si beets monta /windows/D/.../Nuevos:/music y taggerr monta /windows/D/...:/music
 
@@ -69,6 +72,9 @@ class SaveRequest(BaseModel):
     lyrics: Optional[str] = None
     cover_b64: Optional[str] = None
     cover_mime: Optional[str] = None
+
+class RenameRequest(BaseModel):
+    path: str
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -561,5 +567,178 @@ def stream_audio(path: str, request: Request):
     })
 
 
+# ── Rename ────────────────────────────────────────────────────────────────────
+
+def sanitize(s: str) -> str:
+    """Elimina caracteres inválidos para nombres de archivo/carpeta."""
+    s = s.strip()
+    s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', s)
+    s = re.sub(r'_+', '_', s)
+    return s or "Desconocido"
+
+@app.post("/api/rename")
+def rename_file(req: RenameRequest):
+    fp = safe_path(req.path)
+    if not fp.is_file():
+        raise HTTPException(404, "Archivo no encontrado")
+
+    meta = read_meta(fp)
+
+    title  = sanitize(meta.get("title")  or fp.stem)
+    artist = sanitize(meta.get("artist") or "Desconocido")
+    album  = sanitize(meta.get("album")  or "Desconocido")
+    year   = sanitize(meta.get("year")   or "")
+    track  = meta.get("track") or ""
+
+    # "3/12" → "03"
+    if track:
+        track = track.split("/")[0].strip().zfill(2)
+    else:
+        track = "00"
+
+    new_rel = RENAME_TEMPLATE.format(
+        title=title, artist=artist, album=album, year=year, track=track,
+    ) + fp.suffix.lower()
+
+    new_fp = MUSIC_DIR / new_rel
+
+    # Manejar colisiones
+    if new_fp.exists() and new_fp.resolve() != fp.resolve():
+        stem   = new_fp.stem
+        suffix = new_fp.suffix
+        parent = new_fp.parent
+        counter = 1
+        while new_fp.exists():
+            new_fp = parent / f"{stem} ({counter}){suffix}"
+            counter += 1
+
+    new_fp.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(fp), str(new_fp))
+
+    new_path = str(new_fp.relative_to(MUSIC_DIR))
+    new_dir  = str(new_fp.parent.relative_to(MUSIC_DIR))
+    return {"ok": True, "new_path": new_path, "new_dir": new_dir}
+
+
+# ── Batch ─────────────────────────────────────────────────────────────────────
+
+class BatchSaveItem(BaseModel):
+    path: str
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    album: Optional[str] = None
+    track: Optional[str] = None
+
+class BatchSaveRequest(BaseModel):
+    items: list[BatchSaveItem]
+
+@app.get("/api/batch/files")
+def batch_files(path: str = ""):
+    """Lista recursiva de archivos de audio en una carpeta."""
+    base = safe_path(path)
+    if not base.is_dir():
+        raise HTTPException(404, "Carpeta no encontrada")
+    results = []
+    for fp in sorted(base.rglob("*")):
+        if fp.suffix.lower() in AUDIO_EXTENSIONS and fp.is_file():
+            try:
+                m = read_meta(fp)
+            except Exception:
+                m = {}
+            results.append({
+                "path":   str(fp.relative_to(MUSIC_DIR)),
+                "title":  m.get("title") or "",
+                "artist": m.get("artist") or "",
+                "album":  m.get("album") or "",
+                "track":  m.get("track") or "",
+            })
+    return {"files": results}
+
+@app.post("/api/batch/save")
+def batch_save(req: BatchSaveRequest):
+    """Guarda artista, álbum, track y título en múltiples archivos."""
+    saved, errors = 0, []
+    for item in req.items:
+        try:
+            fp = safe_path(item.path)
+            if not fp.is_file():
+                errors.append(item.path)
+                continue
+            # Reutilizar write_meta con solo los 4 campos batch
+            partial = SaveRequest(
+                path=item.path,
+                title=item.title,
+                artist=item.artist,
+                album=item.album,
+                track=item.track,
+            )
+            write_meta(fp, partial)
+            saved += 1
+        except Exception as e:
+            errors.append(f"{item.path}: {e}")
+    return {"ok": True, "saved": saved, "errors": errors}
+
+@app.get("/api/batch/search/musicbrainz")
+def batch_search_mb(title: str = "", artist: str = ""):
+    """Búsqueda rápida MB para batch — devuelve el mejor resultado."""
+    try:
+        query_parts = []
+        if title:  query_parts.append(f'recording:"{title}"')
+        if artist: query_parts.append(f'artist:"{artist}"')
+        if not query_parts:
+            return {"result": None}
+        query = " AND ".join(query_parts)
+        result = musicbrainzngs.search_recordings(query=query, limit=1)
+        recs = result.get("recording-list", [])
+        if not recs:
+            return {"result": None}
+        r = recs[0]
+        release = (r.get("release-list") or [{}])[0]
+        track_list = (release.get("medium-list") or [{}])[0]
+        track_info = (track_list.get("track-list") or [{}])[0]
+        return {"result": {
+            "title":  r.get("title", ""),
+            "artist": (r.get("artist-credit-phrase") or
+                       (r.get("artist-credit") or [{}])[0].get("artist", {}).get("name", "")),
+            "album":  release.get("title", ""),
+            "track":  track_info.get("number", ""),
+            "year":   release.get("date", "")[:4] if release.get("date") else "",
+        }}
+    except Exception:
+        return {"result": None}
+
+@app.get("/api/batch/search/discogs")
+async def batch_search_discogs(title: str = "", artist: str = ""):
+    """Búsqueda rápida Discogs para batch — devuelve el mejor resultado."""
+    try:
+        params = {"type": "release", "per_page": 1}
+        if title:  params["track"] = title
+        if artist: params["artist"] = artist
+        if not title and not artist:
+            return {"result": None}
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://api.discogs.com/database/search",
+                params=params,
+                headers={"Authorization": f"Discogs token={DISCOGS_TOKEN}",
+                         "User-Agent": "Taggerr/1.0"},
+            )
+        results = resp.json().get("results", [])
+        if not results:
+            return {"result": None}
+        r = results[0]
+        title_parts = r.get("title", "").split(" - ", 1)
+        return {"result": {
+            "title":  title,
+            "artist": title_parts[0].strip() if len(title_parts) > 1 else "",
+            "album":  title_parts[1].strip() if len(title_parts) > 1 else r.get("title", ""),
+            "track":  "",
+            "year":   str(r.get("year", "")),
+        }}
+    except Exception:
+        return {"result": None}
+
+
 # ── Static frontend ───────────────────────────────────────────────────────────
 app.mount("/", StaticFiles(directory="/app/frontend", html=True), name="frontend")
+
