@@ -11,6 +11,7 @@ Pensado como complemento de [beets](https://beets.io/) — para corregir manualm
 ![Principal](docs/screenshot1.png)
 ![Visualizacion](docs/screenshot2.png)
 ![Edicion](docs/screenshot3.png)
+![Lotes](docs/screenshot4.png)
 
 ---
 
