@@ -197,6 +197,13 @@ El indicador **BEETS (N)** en el header muestra si la API web de beets está dis
 
 ---
 
+## Recursos útiles
+
+- [Mi configuración de beets](https://github.com/osdaeg/my-beets-config)
+- [Script post-descarga para SLSKD](https://github.com/osdaeg/slskd-finish-script)
+
+---
+
 ## Mantenimiento
 
 ```bash
