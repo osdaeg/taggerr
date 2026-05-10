@@ -49,7 +49,7 @@ Nota: la API key de AcoustID requiere registrar una *aplicación* en acoustid.or
 **1. Clonar el repositorio**
 
 ```bash
-git clone https://codeberg.org/osdaeg/taggerr.git
+git clone https://github.com/osdaeg/taggerr.git
 cd taggerr
 ```
 
@@ -199,8 +199,8 @@ El indicador **BEETS (N)** en el header muestra si la API web de beets está dis
 
 ## Recursos útiles
 
-- [Mi configuración de beets](https://codeberg.org/osdaeg/my-beets-config)
-- [Script post-descarga para SLSKD](https://codeberg.org/osdaeg/slskd-finish-script)
+- [Mi configuración de beets](https://github.com/osdaeg/my-beets-config)
+- [Script post-descarga para SLSKD](https://github.com/osdaeg/slskd-finish-script)
 
 ---
 
