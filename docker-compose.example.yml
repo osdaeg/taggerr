@@ -1,0 +1,22 @@
+services:
+  taggerr:
+    build: .
+    container_name: taggerr
+    ports:
+      - "8499:8000"
+    volumes:
+      - /ruta/a/tu/musica:/music
+      - /ruta/a/tu/carpeta/donde/descargas/caratulas:/art
+      - /ruta/a/tu/config:/config
+    env_file:
+      - .env
+    restart: unless-stopped
+    networks:
+      - TuRed
+
+volumes:
+  taggerr-config:
+
+networks:
+  TuRed:
+    external: true

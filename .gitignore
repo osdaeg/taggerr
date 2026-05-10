@@ -1,0 +1,8 @@
+.env
+docker-compose.yml
+*.log
+logs/
+taggerr_especificaciones.txt
+README.md.github
+
+README.md.codeberg
